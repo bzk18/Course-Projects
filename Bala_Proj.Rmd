@@ -1,0 +1,417 @@
+---
+title: "STAT 555 Project"
+author: "Balaji Kumar(Biology), Bipanna Timilsena  (Entymology), Jacob Parsons (Statistics), Xueyuan Jiang(MCIBS)"
+date: "5/5/2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r Get_IDs, eval=F, include=T}
+#Get Encode IDs
+library(downloader)
+ids = scan("encodeIds.txt",sep="\t",what="character")
+cell.lines = c()
+cell.ids = c()
+for(i in 1:length(ids)){
+  if(substr(ids[i],nchar(ids[i]),nchar(ids[i])) == ")"){
+    cell.lines = c(cell.lines,unlist(strsplit(ids[i]," "))[1])
+    next}
+  cell.ids= c(cell.ids,unlist(strsplit(ids[i]," ",fixed=T))[1])
+}
+
+#Adding replicates to the names
+cell.lines = paste(rep(paste(cell.lines, rep(1:3, times=4),sep="_"),each=2),1:2,sep="_")
+```
+
+```{r Download, eval=F, include=T}
+#Downloading data; Replace file-tag if need to download alternative format
+url = "https://www.encodeproject.org/files/<id>/@@download/<id>.bam"
+for(i in 1:length(cell.ids)){
+  url_i = gsub("<id>",cell.ids[i],x=url,fixed=T)
+  download.file(url_i,paste(cell.lines[i],"bam",sep="."),method="wget")
+}
+```
+
+```{r load_control_sample,eval=F, include=T}
+#Load cell line 1
+#cmp replicates
+setwd("/data/bzk18/Project/Misc/Spring17/STAT555/Project/tsv")
+control1_1 = read.table("CMP_1_1.tsv",sep="\t",header=T)
+control1_2 = read.table("CMP_1_2.tsv",sep="\t",header=T)
+control2_1 = read.table("CMP_2_1.tsv",sep="\t",header=T)
+control2_2 = read.table("CMP_2_2.tsv",sep="\t",header=T)
+
+control1 = data.frame(control1_1$expected_count,control1_2$expected_count)
+control2 = data.frame(control2_1$expected_count,control2_2$expected_count )
+rownames(control1) = control1_1$gene_id
+rownames(control2) = control1_1$gene_id
+colnames(control1) = c("CMP1_1","CMP1_2")
+colnames(control2) = c("CMP2_1","CMP2_2")
+```
+
+```{r load_treatment_sample, eval=F, include=T}
+#Load cell line 2
+setwd("/data/bzk18/Project/Misc/Spring17/STAT555/Project/tsv")
+treatment1_1 = read.table("Erythroblast_1_1.tsv",sep="\t",header=T)
+treatment1_2 = read.table("Erythroblast_1_2.tsv",sep="\t",header=T)
+treatment2_1 = read.table("Erythroblast_2_1.tsv",sep="\t",header=T)
+treatment2_2 = read.table("Erythroblast_2_2.tsv",sep="\t",header=T)
+
+treatment1 = data.frame(treatment1_1$expected_count,treatment1_2$expected_count)
+treatment2 = data.frame(treatment2_1$expected_count,treatment2_2$expected_count )
+rownames(treatment1) = treatment1_1$gene_id
+rownames(treatment2) = treatment1_1$gene_id
+colnames(treatment1) = c("EBT1_1","EBT1_2")
+colnames(treatment2) = c("EBT2_1","EBT2_2")
+
+sample1=data.frame(control1, treatment1)
+sample1 = sample1[rowSums(sample1)>40,]
+sample2 = data.frame(control2,treatment2)
+sample2 = sample2[rowSums(sample2)>40,]
+library(RColorBrewer)
+hmcol<-colorRampPalette(brewer.pal(10,"RdBu"))(256)
+pdf("Heatmap_SS.pdf")
+heatmap(scale(as.matrix(sample1)),col=hmcol,cexCol=1.5,cexRow=.05)
+dev.off()
+pdf("Heatmap_TS.pdf")
+heatmap(scale(as.matrix(sample2)),col=hmcol,cexCol=1.5,cexRow=.05)
+dev.off()
+
+```
+
+```{r DESeq2, eval=F, include=T}
+#Creating DESEqDataSet and estimating size factors for each column
+library(DESeq2)
+library(geneplotter)
+library(ggplot2)
+library(edgeR)
+sample1=data.frame(control1,treatment1)
+sample2 = data.frame(control2,treatment2)
+sample1 = round(sample1)
+sample2 = round(sample2)
+#Filtering genes which don't have atleast <10 reads> on each sample
+sample1 = sample1[rowSums(sample1)>=40,]
+sample2 = sample2[rowSums(sample2)>=40,]
+spikeins1 = grep(pattern="gSpikein",rownames(sample1))
+spikeins2 = grep(pattern="gSpikein",rownames(sample2))
+condition <- factor(rep(c("CMP","EBT"),each=2))
+dds1 <- DESeqDataSetFromMatrix(sample1, DataFrame(condition), ~ condition)
+dds2 <- DESeqDataSetFromMatrix(sample2, DataFrame(condition), ~ condition)
+#Normalization with TMM
+normfactors1 = calcNormFactors(counts(dds1),logratioTrim=.3, sumTrim=0.05,method="TMM")
+sizeFactors(dds1) <- normfactors1
+sizeFactors(dds1)
+normfactors2 = calcNormFactors(counts(dds2),logratioTrim=.3, sumTrim=0.05,method="TMM")
+sizeFactors(dds2) <- normfactors2
+sizeFactors(dds2)
+#Plotting density plots for log2 data
+df1 = reshape2::melt(log2(counts(dds1,normalized=TRUE)+1),value.name ="values" )
+df1$Var1=NULL
+df1$condn = colData(dds1)[df1$Var2,1]
+print(ggplot(df1, aes(x = values, colour = Var2, fill = Var2)) + ylim(c(0,0.25)) +
+  geom_density(alpha = 0.2, size = 1.25) + facet_wrap( ~condn) +
+  xlab(expression(log[2](count + 1))))
+df2 = reshape2::melt(log2(counts(dds2,normalized=TRUE)+1),value.name ="values" )
+df2$Var1=NULL
+df2$condn = colData(dds2)[df2$Var2,1]
+print(ggplot(df2, aes(x = values, colour = Var2, fill = Var2)) + ylim(c(0,0.25)) +
+  geom_density(alpha = 0.2, size = 1.25) + facet_wrap( ~condn) +
+  xlab(expression(log[2](count + 1))))
+
+#MA plot between all samples
+require(gridExtra)
+MA.idx = t(combn(1:ncol(dds1), 2))
+pdf("MA_plots_CMP1_v_EBT_tech1.pdf")
+plots = list()
+count = 1
+for( i in 1:nrow(MA.idx)){
+  A = 0.5*(log2(counts(dds1,normalized=T)+1)[,MA.idx[i,1]] + log2(counts(dds1,normalized=T)+1)[,MA.idx[i,2]])
+  M = log2(counts(dds1,normalized=T)+1)[,MA.idx[i,1]] - log2(counts(dds1,normalized=T)+1)[,MA.idx[i,2]]
+  df = data.frame(A, M)
+  plots[[count]] = ggplot(df, aes(x = A, y = M)) + geom_point(size = 1.5, alpha = 1/5) + geom_hline(yintercept = 0,color = "blue3") + stat_smooth(se = FALSE, method = "loess", color = "red3")+ggtitle(paste(colnames(dds1)[MA.idx[i,1]]," vs ",colnames(dds1)[MA.idx[i,2]]))
+  if(count %% 6 == 0){
+    grid.arrange(grobs=plots,nrow=2,ncol=3)
+    count = 0
+    plots=list()
+  }
+  count = count+1
+}
+dev.off()
+
+pdf("MA_plots_CMP2_v_EBT_tech2.pdf")
+plots = list()
+count = 1
+for( i in 1:nrow(MA.idx)){
+  A = 0.5*(log2(counts(dds2,normalized=T)+1)[,MA.idx[i,1]] + log2(counts(dds2,normalized=T)+1)[,MA.idx[i,2]])
+  M = log2(counts(dds2,normalized=T)+1)[,MA.idx[i,1]] - log2(counts(dds2,normalized=T)+1)[,MA.idx[i,2]]
+  df = data.frame(A, M)
+  plots[[count]] = ggplot(df, aes(x = A, y = M)) + geom_point(size = 1.5, alpha = 1/5) + geom_hline(yintercept = 0,color = "blue3") + stat_smooth(se = FALSE, method = "loess", color = "red3")+ggtitle(paste(colnames(dds2)[MA.idx[i,1]]," vs ",colnames(dds2)[MA.idx[i,2]]))
+  if(count %% 6 == 0){
+    grid.arrange(grobs=plots,nrow=2,ncol=3)
+    count = 0
+    plots=list()
+  }
+  count = count+1
+}
+dev.off()
+#Plotting Heatmap
+library(gplots)
+rlg1 = rlog(dds1,blind=T)
+log2_dist1 = dist(t(assay(rlg1)))
+log2_mat1 = as.matrix(log2_dist1)
+heatmap(log2_mat1)
+rlg2 = rlog(dds2,blind=T)
+log2_dist2 = dist(t(assay(rlg2)))
+log2_mat2 = as.matrix(log2_dist2)
+heatmap(log2_mat2)
+#Plotting First 2 PCs 
+plotPCA(rlg1,intgroup=c("condition"))
+plotPCA(rlg2,intgroup=c("condition"))
+```
+
+```{r DESeq2_DE, eval=F, include=T}
+#Estimate Dispersion Parameters for each gene
+dds1 = estimateDispersions(dds1)
+plotDispEsts(dds1)
+dds2 = estimateDispersions(dds2)
+plotDispEsts(dds2)
+#Differential Expression Analysis 
+dds1 = nbinomWaldTest(dds1)
+dds2 = nbinomWaldTest(dds2)
+#Setting Significance level
+alpha = 0.01
+#Adjusting P-values for multiple testing
+#Make sure to set independent filtering to FALSE
+ddres1 = results(dds1,p.adjust="fdr",independentFiltering = F,altHypothesis ="greaterAbs",lfcThreshold=0,contrast=c("condition","CMP","EBT"))
+table(ddres1$padj<alpha)
+ddres2 = results(dds2,p.adjust="fdr",independentFiltering = F,altHypothesis ="greaterAbs",lfcThreshold=0,contrast=c("condition","CMP","EBT"))
+table(ddres2$padj<alpha)
+
+table(ddres1$padj<alpha)/length(ddres1$padj)
+table(ddres2$padj<alpha)/length(ddres2$padj)
+#Too many significiant P values?
+#Checking if P-values follow correct distribution 
+hist(ddres1$pvalue,xlab="Pvalues",main="DESeq:ScriptSeq")
+hist(ddres2$pvalue,xlab="Pvalues",main="DESeq:TotalScript")
+#Plotting MA plot
+DESeq2::plotMA(ddres1,alpha=alpha,main="ScriptSeq")
+DESeq2::plotMA(ddres2,alpha=alpha,main="TotalScript")
+#Checking for outliers
+cat("Number of Outliers =",sum(is.na(ddres1$padj)),"\n")
+cat("Number of Outliers =",sum(is.na(ddres2$padj)),"\n")
+
+table(ddres1$padj<alpha)
+table(ddres2$padj<alpha)
+```
+
+```{r Limma, eval=F, include=T}
+#DE With Limma
+source("http://www.bioconductor.org/biocLite.R")
+library(limma)
+library(statmod)
+library(edgeR)
+#Significance level
+alpha= 0.01
+#Create a DGEList
+dge1 = DGEList(counts=sample1,samples=colnames(sample1),group=rep(c("CMP","EBT"),each=2))
+dge2 = DGEList(counts=sample2,samples=colnames(sample2),group=rep(c("CMP","EBT"),each=2))
+#Normalize with TMM
+contrasts(dge1$samples$group) = c(1,0)
+contrasts(dge2$samples$group) = c(1,0)
+dge1 = calcNormFactors(dge1,method="TMM")
+dge2 = calcNormFactors(dge2,method="TMM")
+design1 = model.matrix(~ dge1$samples$group)
+design2 = model.matrix(~ dge2$samples$group)
+#Doing voom stuff
+v1 = voom(dge1,design=design1,plot=T)
+v2 = voom(dge2,design=design2,plot=T)
+#Fit into linear models for contrasting between samples
+fit1 = lmFit(v1,design1)
+fit2 = lmFit(v2,design2)
+#Emperical estimation of t-statistics (This gives Pvalues!)
+fit1 = eBayes(fit1)
+fit2 = eBayes(fit2)
+# fit1 = treat(fit1,lfc=0)
+# fit2 = treat(fit2,lfc=0)
+#Nice dataframe extracting function, can adjust Pvalues here
+lmres1 = topTable(fit1,adjust.method="fdr",number=nrow(fit1))
+lmres2 = topTable(fit2,adjust.method="fdr",number=nrow(fit2))
+# lmres1 = topTreat(fit1,adjust.method="fdr",number=nrow(fit1))
+# lmres2 = topTreat(fit2,adjust.method="fdr",number=nrow(fit2))
+table(lmres1$adj.P.Val<alpha)
+table(lmres1$adj.P.Val<alpha)/nrow(lmres1)
+table(lmres2$adj.P.Val<alpha)
+table(lmres2$adj.P.Val<alpha)/nrow(lmres2)
+
+#Plot to see if Pvalues follow correct distn
+hist(fit1$p.value,xlab="Pvalues",main="Limma:ScriptSeq")
+hist(fit2$p.value,xlab="Pvalues",main="Limma:TotalScript")
+```
+
+```{r save, eval=F, include=T}
+save(lmres2,lmres1,ddres1,ddres2,file="CMP_v_EBT_RNA-Seq.RData")
+```
+
+```{r Get_ENS_IDs, eval=F, include=T}
+#Get Gene IDs for GO analysis
+setwd("/data/bzk18/Project/Misc/Spring17/STAT555/Project/Results/")
+#Writing Gene Ids to file for GO for scriptseq
+genes = ddres2[ddres2$padj<alpha,]
+upgenes = rownames(genes[genes$log2FoldChange>0,])
+downgenes = rownames(genes[genes$log2FoldChange<0,])
+Allgenes = rownames(dds2)
+genes = rownames(genes)
+genes = grep("ENS",genes,value=T)
+Allgenes = grep("ENS",Allgenes,value=T)
+upgenes = grep("ENS",upgenes,value=T)
+downgenes = grep("ENS",downgenes,value=T)
+All.ids = sapply(1:length(Allgenes), function(i) unlist(strsplit(Allgenes[i],".",fixed=T))[1])
+both.ids = sapply(1:length(genes), function(i) unlist(strsplit(genes[i],".",fixed=T))[1])
+up.ids = sapply(1:length(upgenes), function(i) unlist(strsplit(upgenes[i],".",fixed=T))[1])
+down.ids = sapply(1:length(downgenes), function(i) unlist(strsplit(downgenes[i],".",fixed=T))[1])
+write.table(All.ids,file="DESeq_TS_Backgroundgenes.txt",sep="\n",row.names=F,quote=F,col.names=F)
+write.table(up.ids,file="DESeq_TS_upreggenes.txt",sep="\n",row.names=F,quote=F,col.names=F)
+write.table(down.ids,file="DESeq_TS_downreggenes.txt",sep="\n",row.names=F,quote=F,col.names=F)
+write.table(both.ids,file="DESeq_TS_allDEgenes.txt",sep="\n",row.names=F,quote=F,col.names=F)
+
+
+
+```
+
+```{r comparisons,eval=F, include=T}
+#Comparing between protocols and replicates
+library(ggplot2)
+# load(file="CMP_v_EBT_RNA-Seq.RData")
+#First compare Totalscript and scriptseq by analyis method. 
+#Only look at genes declared significant by both methods
+sharedrows = base::match(rownames(lmres1), rownames(lmres2))
+sharedrows1 = which(!is.na(sharedrows))
+sharedrows2 = sharedrows[which(!is.na(sharedrows))]
+
+ggplot() + geom_point( mapping = aes(lmres1[sharedrows1,]$logFC , lmres2[sharedrows2,]$logFC)  , alpha=I(0.2))  + geom_smooth( mapping = aes(lmres1[sharedrows1,]$logFC , lmres2[sharedrows2,]$logFC) ) + xlab("Scriptseq Log Fold Change") + ylab("Totalscript Log Fold Change") + labs(title = "Totalscript vs Scriptseq Estimates of Log Fold Change (Limma Voom) ")
+
+sharedrows = base::match(rownames(ddres1), rownames(ddres2))
+sharedrows1 = which(!is.na(sharedrows))
+sharedrows2 = sharedrows[which(!is.na(sharedrows))]
+
+ggplot() + geom_point( mapping = aes(ddres1[sharedrows1,]$log2FoldChange , ddres2[sharedrows2,]$log2FoldChange), alpha=I(0.05) )  + geom_smooth( mapping = aes(ddres1[sharedrows1,]$log2FoldChange , ddres2[sharedrows2,]$log2FoldChange) ) + xlab("Scriptseq Log Fold Change") + ylab("Totalscript Log Fold Change") + labs(title = "Totalscript vs Scriptseq Estimates of Log Fold Change (DESeq) ")
+
+#Now compare analysis method by protocol
+#Only look at genes analyzed by both methods
+sharedrows = base::match(rownames(lmres1), rownames(ddres1))
+sharedrows1 = which(!is.na(sharedrows))
+sharedrows2 = sharedrows[which(!is.na(sharedrows))]
+
+ggplot() + geom_point( mapping = aes(lmres1[sharedrows1,]$logFC , ddres1[sharedrows2,]$log2FoldChange)  , alpha=I(0.2))  + geom_smooth( mapping = aes(lmres1[sharedrows1,]$logFC , ddres1[sharedrows2,]$log2FoldChange)  ) + xlab("Limma Log Fold Change") + ylab("DESeq Log Fold Change") + labs(title = "Limma Voom vs DESeq Estimates of Log Fold Change (Scriptseq) ")
+
+sharedrows = base::match(rownames(lmres2), rownames(ddres2))
+sharedrows1 = which(!is.na(sharedrows))
+sharedrows2 = sharedrows[which(!is.na(sharedrows))]
+
+ggplot() + geom_point( mapping = aes(lmres2[sharedrows1,]$logFC , ddres2[sharedrows2,]$log2FoldChange)  , alpha=I(0.2))  + geom_smooth( mapping = aes(lmres2[sharedrows1,]$logFC , ddres2[sharedrows2,]$log2FoldChange)  ) + xlab("Limma Log Fold Change") + ylab("DESeq Log Fold Change") + labs(title = "Limma Voom vs DESeq Estimates of Log Fold Change (Totalscript) ")
+```
+
+```{r ATAC_Heatmap, eval=F, include=T}
+#Heatmap for ATAC-Seq raw counts
+setwd("/data/bzk18/Project/Misc/Spring17/STAT555/Project/bigBed/")
+atac = read.table("cmp_vs_ebt_raw_counts.txt",header=T,sep="\t",fill=T)
+atac = atac[,c(20:23)]
+colnames(atac) = c("cmp1","cmp2","ebt1","ebt2")
+nrow(atac)
+atac = as.matrix(sapply(atac, as.numeric))  
+nas = which(is.na(rowSums(atac)))
+atac = atac[-nas,]
+library(RColorBrewer)
+library(edgeR)
+atac = atac/calcNormFactors(atac,method="TMM")
+hmcol<-colorRampPalette(brewer.pal(10,"RdBu"))(256)
+jpeg("Heatmap_ATAC.jpeg")
+heatmap(atac,col=hmcol,cexCol=1.5,cexRow=.05)
+dev.off()
+```
+
+```{r ATAC_Seq_Pipeline, eval=F, include=T}
+#ATAC-Seq Pipeline
+#Run from shell
+#converting bigBed to bed if you start from bed files
+bigBedToBed cmp_1.bigBed  cmp_1.bed
+bigBedToBed cmp_2.bigBed  cmp_2.bed
+bigBedToBed CFU-E_1.bigBed  CFU-E_1.bed
+bigBedToBed CFU-E_2.bigBed  CFU-E_2.bed
+bigBedToBed CMP_1.bigBed  CMP_1.bed
+bigBedToBed CMP_2.bigBed  CMP_2.bed
+bigBedToBed Erythroblast_1.bigBed  Erythroblast_1.bed
+bigBedToBed Erythroblast_2.bigBed  Erythroblast_2.bed
+
+sort -k 1,1 cmp_1.bed> cmp_1s.bed
+sort -k 1,1 cmp_2.bed> cmp_2s.bed
+sort -k 1,1 CFU-E_1.bed > CFU-E_1s.bed
+sort -k 1,1 CFU-E_2.bed > CFU-E_2s.bed
+sort -k 1,1 CMP_1.bed > CMP_1s.bed
+sort -k 1,1 CMP_2.bed > CMP_2s.bed
+sort -k 1,1 Erythroblast_1.bed > Erythroblast_1s.bed
+sort -k 1,1 Erythroblast_2.bed > Erythroblast_2s.bed
+
+
+#ATAC-Seq pipeline
+#Install HOMER 
+#Install mm10 genome and gtf for HOMER
+perl ~/src/HOMER/configureHomer.pl -install mm10
+
+#Make Tag Directory
+makeTagDirectory cmp1_tag cmp_1.bam -sspe -unique
+makeTagDirectory cmp2_tag cmp_2.bam -sspe -unique
+makeTagDirectory ebt1_tag Erythroblast_1.bam -sspe -unique
+makeTagDirectory ebt2_tag Erythroblast_2.bam -sspe -unique
+
+#Find Peaks
+findPeaks cmp1_tag -style histone -o auto
+findPeaks cmp2_tag -style histone -o auto
+findPeaks ebt1_tag -style histone -o auto
+findPeaks ebt2_tag -style histone -o auto
+
+#Remove blacklist regions from the peaks. Blacklist regions are shared via ENCODE
+pos2bed.pl ./cmp1_tag/regions.txt > ./cmp1_tag/regions.bed
+pos2bed.pl ./cmp2_tag/regions.txt > ./cmp2_tag/regions.bed
+pos2bed.pl ./ebt1_tag/regions.txt > ./ebt1_tag/regions.bed
+pos2bed.pl ./ebt2_tag/regions.txt > ./ebt2_tag/regions.bed
+
+bedtools intersect -a ./cmp1_tag/regions.bed -b blacklist.bed -v > ./cmp1_tag/regions_fd.bed
+bedtools intersect -a ./cmp2_tag/regions.bed -b blacklist.bed -v > ./cmp2_tag/regions_fd.bed
+bedtools intersect -a ./ebt1_tag/regions.bed -b blacklist.bed -v > ./ebt1_tag/regions_fd.bed
+bedtools intersect -a ./ebt2_tag/regions.bed -b blacklist.bed -v > ./ebt2_tag/regions_fd.bed
+
+mv ./cmp1_tag/regions_fd.bed ./cmp1_tag/regions.bed
+mv ./cmp2_tag/regions_fd.bed ./cmp2_tag/regions.bed
+mv ./ebt1_tag/regions_fd.bed ./ebt1_tag/regions.bed
+mv ./ebt2_tag/regions_fd.bed ./ebt2_tag/regions.bed
+
+bed2pos.pl ./cmp1_tag/regions.bed > ./cmp1_tag/regions.txt
+bed2pos.pl ./cmp2_tag/regions.bed > ./cmp2_tag/regions.txt
+bed2pos.pl ./ebt1_tag/regions.bed > ./ebt1_tag/regions.txt
+bed2pos.pl ./ebt2_tag/regions.bed > ./ebt2_tag/regions.txt
+
+#Merging replicate peak files for some cool venn diagrams if you want
+mergePeaks -d ./cmp1_tag/regions.txt ./cmp2_tag/regions.txt -venn cmp_ven > ./cmp_merged/regions.txt
+mergePeaks -d ./ebt1_tag/regions.txt ./ebt2_tag/regions.txt -venn ebt_ven > ./ebt_merged/regions.txt
+
+#Annotate Peaks 
+annotatePeaks.pl tss mm10 -raw -d cmp1_tag/ cmp2_tag/ ebt1_tag/ ebt2_tag/ > cmp_vs_ebt_raw_counts.txt
+
+#Do DE Peaks analysis and output DE_genes
+getDiffExpression.pl cmp_vs_ebt_raw_counts.txt cmp cmp ebt ebt -DESeq2 -simpleNorm -export cmp_ebt -log2fold 2 -fdr 0.01 > cmp_vs_ebt_DBA.txt
+
+###################
+Total Genes: 36795
+		Total Up-regulated in ebt vs. cmp: 2040 (5.544%) [log2fold>2, FDR<0.01]
+		Total Dn-regulated in ebt vs. cmp: 3127 (8.498%) [log2fold<-2, FDR<0.01]
+##################
+#Saving the ensembl ids of diff genes
+cat cmp_ebt.Up_ebt_vs_cmp.txt | cut -f 15 > Upregulated_genes.txt
+cat cmp_ebt.Down_ebt_vs_cmp.txt | cut -f 15 > Downregulated_genes.txt
+```
+
